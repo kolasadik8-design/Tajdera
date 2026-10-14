@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SIDIGI Exchange - Juba Cairo</title>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+import { getFirestore, doc, getDoc, setDoc, collection, addDoc, getDocs, query, where, serverTimestamp, Timestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+const firebaseConfig={apiKey:"AIzaSyAF6tqp2q2YSzyE_YZFBi4h_nt0zzYVCsI",authDomain:"tajdera-596d1.firebaseapp.com",projectId:"tajdera-596d1",storageBucket:"tajdera-596d1.firebasestorage.app",messagingSenderId:"947869925949",appId:"1:947869925949:web:0f210e6050211d78ed2054"};
+const app=initializeApp(firebaseConfig);
+const auth=getAuth(app);
+const db=getFirestore(app);
+
+let lang='ar';
+let currentRole='cashier';
+let currentRate=5000;
+let commissionRate=0.02;
+
+const t={
+ ar:{login:"دخول آمن",email:"الإيميل",pass:"كلمة السر",branch:"الفرع",from:"من",to:"إلى",juba:"جوبا",cairo:"القاهرة",amount:"مبلغ الدولار (USD فقط)",create:"تنفيذ الحوالة",logout:"خروج",adminPanel:"لوحة الادمن",editComm:"تعديل نسبة العمولة %",editRate:"تعديل سعر الصرف",save:"حفظ",reports:"التقارير",daily:"يومي",weekly:"أسبوعي",monthly:"شهري",yearly:"سنوي",total:"الإجمالي",fee:"العمولة",count:"عدد الحوالات",langBtn:"English"},
+ en:{login:"Secure Login",email:"Email",pass:"Password",branch:"Branch",from:"From",to:"To",juba:"Juba",cairo:"Cairo",amount:"Amount USD Only",create:"Create Transfer",logout:"Logout",adminPanel:"Admin Panel",editComm:"Edit Commission %",editRate:"Edit Exchange Rate",save:"Save",reports:"Reports",daily:"Daily",weekly:"Weekly",monthly:"Monthly",yearly:"Yearly",total:"Total",fee:"Fee",count:"Count",langBtn:"العربية"}
+};
+
+window.toggleLang=()=>{
+ lang=lang==='ar'?'en':'ar';
+ document.documentElement.lang=lang;
+ document.documentElement.dir=lang==='ar'?'rtl':'ltr';
+ document.querySelectorAll('[data-i]').forEach(el=>{ el.innerText=t[lang][el.dataset.i]||el.innerText; });
+}
+
+window.secureLogin=async()=>{
+ try{await signInWithEmailAndPassword(auth,document.getElementById('email').value.trim(),document.getElementById('pass').value);}catch(e){alert(e.message);}
+}
+window.doLogout=()=>signOut(auth);
+
+onAuthStateChanged(auth, async(user)=>{
+ if(!user){document.getElementById('loginBox').style.display='block';document.getElementById('mainBox').style.display='none';return;}
+ const uDoc=await getDoc(doc(db,"users",user.uid));
+ currentRole=uDoc.data()?.role||'cashier';
+ const rateDoc=await getDoc(doc(db,"rates","USD-SSP"));
+ const confDoc=await getDoc(doc(db,"rates","config"));
+ if(rateDoc.exists()) currentRate=rateDoc.data().sellRate;
+ if(confDoc.exists()) commissionRate=confDoc.data().commissionRate;
+ document.getElementById('loginBox').style.display='none';
+ document.getElementById('mainBox').style.display='block';
+ document.getElementById('roleInfo').innerText=`${user.email} | ${currentRole.toUpperCase()} | Rate: ${currentRate} | Comm: ${commissionRate*100}%`;
+ if(currentRole!=='admin'){document.getElementById('adminPanel').style.display='none';}
+ document.getElementById('rateInput').value=currentRate;
+ document.getElementById('commInput').value=commissionRate*100;
+});
+
+window.updateConfig=async()=>{
+ if(currentRole!=='admin') return alert("Admin only");
+ const newRate=Number(document.getElementById('rateInput').value);
+ const newComm=Number(document.getElementById('commInput').value)/100;
+ await setDoc(doc(db,"rates","USD-SSP"),{sellRate:newRate,buyRate:newRate-200,updatedAt:serverTimestamp()},{merge:true});
+ await setDoc(doc(db,"rates","config"),{commissionRate:newComm,updatedAt:serverTimestamp()},{merge:true});
+ currentRate=newRate; commissionRate=newComm;
+ alert("تم الحفظ / Saved");
+ location.reload();
+}
+
+window.createTransfer=async()=>{
+ const usd=Number(document.getElementById('usd').value);
+ const fromB=document.getElementById('fromBranch').value;
+ const toB=document.getElementById('toBranch').value;
+ if(!usd || fromB===toB) return alert(lang==='ar'?"تأكد من المبلغ والفرع":"Check amount & branches");
+ const rateDoc=await getDoc(doc(db,"rates","USD-SSP"));
+ const confDoc=await getDoc(doc(db,"rates","config"));
+ const realRate=rateDoc.data().sellRate;
+ const realComm=confDoc.data().commissionRate;
+ const fee=usd*realComm;
+ const total=usd+fee;
+ await addDoc(collection(db,"transactions"),{usdAmount:usd,rateUsed:realRate,commissionRate:realComm,fee:fee,totalUSD:total,fromBranch:fromB,toBranch:toB,createdBy:auth.currentUser.uid,createdAt:serverTimestamp()});
+ alert(lang==='ar'?`تم: ${usd}$ من ${fromB} إلى ${toB} - العمولة ${fee}$`:`Done: ${usd}$ ${fromB} to ${toB} - Fee ${fee}$`);
+ document.getElementById('usd').value='';
+ loadReport('daily');
+}
+
+window.loadReport=async(type)=>{
+ const now=new Date(); let start=new Date();
+ if(type==='daily') start.setHours(0,0,0,0);
+ if(type==='weekly') start.setDate(now.getDate()-7);
+ if(type==='monthly') start.setMonth(now.getMonth()-1);
+ if(type==='yearly') start.setFullYear(now.getFullYear()-1);
+ const q=query(collection(db,"transactions"),where("createdAt",">=",Timestamp.fromDate(start)));
+ const snap=await getDocs(q);
+ let sumUSD=0,sumFee=0;
+ snap.forEach(d=>{sumUSD+=d.data().usdAmount; sumFee+=d.data().fee;});
+ document.getElementById('reportOut').innerHTML=`<b>${t[lang][type]}:</b> ${t[lang].count}: ${snap.size} | ${t[lang].total}: ${sumUSD}$ | ${t[lang].fee}: ${sumFee}$`;
+}
+</script>
+<style>
+body{font-family:sans-serif;background:#f8fafc;margin:0}
+.header{background:#dc2626;color:#fff;padding:14px;text-align:center;font-weight:bold}
+.box{background:#fff;max-width:500px;margin:20px auto;padding:20px;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.1)}
+input,select{width:100%;padding:12px;margin:6px 0;border:1px solid #ddd;border-radius:8px;box-sizing:border-box}
+button{width:100%;padding:12px;border:none;border-radius:8px;cursor:pointer;font-weight:bold}
+.btn-green{background:#22c55e}.btn-red{background:#dc2626;color:#fff}.btn-dark{background:#0f172a;color:#fff}
+.small{font-size:12px;color:#64748b;margin-top:6px}
+#mainBox{display:none}
+</style>
+</head>
+<body>
+<div class="header">SIDIGI GENERAL TRADING - EXCHANGE | جوبا - القاهرة</div>
+
+<div class="box" id="loginBox">
+  <h3 data-i="login">دخول آمن</h3>
+  <input id="email" placeholder="Email">
+  <input id="pass" type="password" placeholder="Password">
+  <button class="btn-dark" onclick="secureLogin()" data-i="login">دخول آمن</button>
+  <button onclick="toggleLang()" style="margin-top:8px;background:#e2e8f0" data-i="langBtn">English</button>
+  <div class="small">Project: tajdera-596d1 - USD Only</div>
+</div>
+
+<div class="box" id="mainBox">
+  <div style="display:flex;justify-content:space-between"><small id="roleInfo"></small><button onclick="toggleLang()" style="width:auto;padding:4px 10px" data-i="langBtn">English</button></div>
+
+  <div id="adminPanel" style="background:#fef2f2;border:1px solid #fecaca;padding:12px;border-radius:8px;margin:12px 0">
+    <b data-i="adminPanel">لوحة الادمن</b><br>
+    <label data-i="editRate">تعديل سعر الصرف</label><input id="rateInput" type="number">
+    <label data-i="editComm">تعديل نسبة العمولة %</label><input id="commInput" type="number" step="0.1">
+    <button class="btn-red" onclick="updateConfig()" data-i="save">حفظ</button>
+  </div>
+
+  <label data-i="from">من</label>
+  <select id="fromBranch"><option value="JUBA" data-i="juba">جوبا</option><option value="CAIRO" data-i="cairo">القاهرة</option></select>
+  <label data-i="to">إلى</label>
+  <select id="toBranch"><option value="CAIRO" data-i="cairo">القاهرة</option><option value="JUBA" data-i="juba">جوبا</option></select>
+
+  <label data-i="amount">مبلغ الدولار (USD فقط)</label>
+  <input id="usd" type="number" placeholder="1000">
+  <button class="btn-green" onclick="createTransfer()" data-i="create">تنفيذ الحوالة</button>
+
+  <hr>
+  <b data-i="reports">التقارير</b>
+  <div style="display:flex;gap:6px;margin:8px 0">
+    <button onclick="loadReport('daily')" style="flex:1" data-i="daily">يومي</button>
+    <button onclick="loadReport('weekly')" style="flex:1" data-i="weekly">أسبوعي</button>
+    <button onclick="loadReport('monthly')" style="flex:1" data-i="monthly">شهري</button>
+    <button onclick="loadReport('yearly')" style="flex:1" data-i="yearly">سنوي</button>
+  </div>
+  <div id="reportOut" class="small" style="background:#f1f5f9;padding:10px;border-radius:8px">اخ
